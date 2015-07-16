@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/nclack/distance-transform.svg?branch=master)](https://travis-ci.org/nclack/distance-transform)
+
 Pretty simple implementation of a distance transform for 1,2, or N dimensions.
 
 `test.c` documents how to use the code.
