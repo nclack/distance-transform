@@ -35,7 +35,8 @@ static void test1d() {
     }
     ws=malloc(sizeof_dist1d_workspace(N));
     dist1d(dst,src,N,1,ws);
-
+    free(ws);
+    
     writef32("src1d.f32",src,N);
     writef32("dst1d.f32",dst,N);
 }
@@ -77,6 +78,7 @@ static void test2d() {
     {
         void *ws=malloc(sizeof_dist2d_workspace(n));
         dist2d(dst,src,n,strides,ws);
+        free(ws);
     }
 
     writef32("src2d.f32",src,strides[2]);
@@ -120,6 +122,7 @@ static void test3d() {
     {
         void *ws=malloc(sizeof_distnd_workspace(n,ndim));
         distnd(dst,src,n,strides,ndim,ws);
+        free(ws);
     }
 
     writef32("src3d.f32",src,strides[ndim]);
