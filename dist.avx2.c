@@ -13,6 +13,7 @@
 #include <intrin.h>
 #define export __declspec(dllexport)
 #else
+#include <x86intrin.h>
 #define export
 #endif
 
@@ -48,9 +49,16 @@ static struct batched_workspace* dist1d_format_workspace(void *workspace,unsigne
    stride must be divisible by 8.
 
    FIXME: rename batched to something more descriptive like vec8.
+
+   NOTE: could make all 8 proceed in lock step, so i,k all move together.
+
+         Right now, I seem to be going down the path of letting k,i be different for each steam.
+         That seems like a bad idea since it kills the memory coherance.
+
+         Looks like masks are how logical flow should be done.
 */
 #include <stddef.h>
-static dist1d_batched(float *dst, float *src, int n, int stride, void *workspace) {
+static void dist1d_batched(float *dst, float *src, int n, int stride, void *workspace) {
     struct batched_workspace* ws=dist1d_format_workspace(workspace,n);
     const float * end = src+n*stride;
     const float inf=FLT_MAX,minusinf=-FLT_MAX;
@@ -61,19 +69,29 @@ static dist1d_batched(float *dst, float *src, int n, int stride, void *workspace
     ws->start[1]=_mm256_set1_ps(FLT_MAX);
     for(i=0;i<n;++i){
         const float _i=(float)i;
-        const __m256i v=_mm256_i32gather_epi32(ws->i,k,1);
-        __m256  i2=_mm256_broadcast_ss(&_i),
-                v2=_mm256_cvtepi32_ps(v),
-                denom;
+        const __m256i v=_mm256_i32gather_epi32((const int*)ws->i,k,1);
+        __m256       i2=_mm256_broadcast_ss(&_i),
+                     v2=_mm256_cvtepi32_ps(v);
+
         i2=_mm256_mul_ps(i2,i2);
         v2=_mm256_mul_ps(v2,v2);
-        {
-            __m256i a=_mm256_sub_epi32(_mm256_set1_epi32(i),v);
-            a=_mm256_mul_epi32(_mm256_set1_epi32(2),a);
-            denom=_mm256_cvtepi32_ps(a);
-        }
-// HERE
         
+        __m256 snum,sden;
+        {
+            __m256 si=_mm256_load_ps(src+i*stride),
+                sv=_mm256_i32gather_ps(src,v,stride);
+            __m256i d=_mm256_sub_epi32(_mm256_set1_epi32(i),v);
+            snum=_mm256_sub_ps(_mm256_add_ps(si,i2),_mm256_add_ps(sv,v2));
+            d=_mm256_mul_epi32(_mm256_set1_epi32(2),d);
+            sden=_mm256_cvtepi32_ps(d);
+        }
+
+        __m256 q;
+        {
+            __m256 starts=_mm256_i32gather_ps(ws->start,k,1),
+                      rhs=_mm256_mul_ps(starts,sden);
+            q=_mm256_cmp_ps(snum,rhs,_CMP_LE_OQ);  /* snum<rhs ? -1 : 0 */            
+        }
 
     }
 }
