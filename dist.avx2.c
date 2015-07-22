@@ -13,6 +13,7 @@
 #include <intrin.h>
 #define export __declspec(dllexport)
 #else
+#include <x86intrin.h>
 #define export
 #endif
 
