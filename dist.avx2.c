@@ -21,13 +21,26 @@ struct parabola {
     float start; /* v[k],z[k] in the paper; the beginning of the interval where this parabola is the lower envelope */
 };
 
-struct parabola_batched {
-    __m256i i;
-    __m256  start;
+struct batched_workspace {
+    __m256i *i;
+    __m256  *start;
 };
 
 static unsigned dist1d_batched_sizeof_workspace(int n) {
-    return (n+1)*sizeof(struct parabola_batched);
+    /* FIXME: pad for alignment corrections if neccessary so user doesn't have to use aligned malloc */
+    return sizeof(struct batched_workspace)+(n+1)*(sizeof(__m256)+sizeof(__m256i));
+}
+
+#include <stdint.h>
+/* n must be divisible by 32? for both i and start to be aligned */
+static struct batched_workspace* dist1d_format_workspace(void *workspace,unsigned n) {
+    const unsigned o=(n+1)*(sizeof(__m256)+sizeof(__m256i));
+    struct batched_workspace* out=(struct batched_workspace*)( (uint8_t*)workspace+o ); /* place table-index at the end*/
+    /* FIXME: pad for alignment corrections if neccessary so user doesn't have to use aligned malloc        
+    */
+    out->i=(__m256i*)workspace;
+    out->start=(__m256*)((uint8_t*)workspace+(n+1)*(sizeof(__m256i)));
+    return out;
 }
 
 /* uses avx2 to do 8 1d transforms at once.
@@ -36,16 +49,31 @@ static unsigned dist1d_batched_sizeof_workspace(int n) {
 
    FIXME: rename batched to something more descriptive like vec8.
 */
+#include <stddef.h>
 static dist1d_batched(float *dst, float *src, int n, int stride, void *workspace) {
-    struct parabola_batched* parabolas=(struct parabola_batched*)workspace;
+    struct batched_workspace* ws=dist1d_format_workspace(workspace,n);
     const float * end = src+n*stride;
     const float inf=FLT_MAX,minusinf=-FLT_MAX;
-    parabolas[0].i=_mm256_setzero_si256();
-    parabolas[0].start=_mm256_broadcast_ss(&minusinf);
-    parabolas[1].start=_mm256_broadcast_ss(&inf);
-    for(;src<end;src+=stride,dst+=stride) {
-        __m256 vsrc=_mm256_load_ps(src),
-               vdst=_mm256_load_ps(dst);
+    int i;
+    __m256i k=_mm256_set_epi32(7,6,5,4,3,2,1,0); /* the offset for j'th parabola for the i'th peice of work is k[i]=8*j+i. */
+    ws->i[0]=_mm256_setzero_si256();
+    ws->start[0]=_mm256_set1_ps(-FLT_MAX);
+    ws->start[1]=_mm256_set1_ps(FLT_MAX);
+    for(i=0;i<n;++i){
+        const float _i=(float)i;
+        const __m256i v=_mm256_i32gather_epi32(ws->i,k,1);
+        __m256  i2=_mm256_broadcast_ss(&_i),
+                v2=_mm256_cvtepi32_ps(v),
+                denom;
+        i2=_mm256_mul_ps(i2,i2);
+        v2=_mm256_mul_ps(v2,v2);
+        {
+            __m256i a=_mm256_sub_epi32(_mm256_set1_epi32(i),v);
+            a=_mm256_mul_epi32(_mm256_set1_epi32(2),a);
+            denom=_mm256_cvtepi32_ps(a);
+        }
+// HERE
+        
 
     }
 }
@@ -58,6 +86,7 @@ export unsigned sizeof_dist1d_workspace(int n) {
 /* stride is in units of elements, as opposed to bytes */
 export void dist1d(float *dst,float* src,int n, int stride, void* workspace) {
     struct parabola* parabolas=(struct parabola*)workspace;
+
     int i,k=0; /* the number of parabolas in the lower envelope */
     parabolas[0].i=0;
     parabolas[0].start=-FLT_MAX;
@@ -66,7 +95,7 @@ export void dist1d(float *dst,float* src,int n, int stride, void* workspace) {
         const int v=parabolas[k].i;
         const float i2=(float)i*i,
                     v2=(float)v*v,
-                    denom=2.0f*i-2.0f*v,
+                    denom=2.0f*(i-v),
                     s=(src[i*stride]+i2-(src[v*stride]+v2))/denom; /* test intersection point for k'th parabola */
         if(s<=parabolas[k].start) {                  /* Intersection is too far back, back up to check intersection with prev parabola */
             --k; --i;            
