@@ -8,6 +8,7 @@
 
 #include <float.h>
 #include <string.h>
+#include <stddef.h>
 
 #ifdef _MSC_VER 
 #include <intrin.h>
@@ -56,43 +57,62 @@ static struct batched_workspace* dist1d_format_workspace(void *workspace,unsigne
          That seems like a bad idea since it kills the memory coherance.
 
          Looks like masks are how logical flow should be done.
+
+         Need to change so k index's uniformly into a stack
 */
-#include <stddef.h>
+
 static void dist1d_batched(float *dst, float *src, int n, int stride, void *workspace) {
     struct batched_workspace* ws=dist1d_format_workspace(workspace,n);
     const float * end = src+n*stride;
     const float inf=FLT_MAX,minusinf=-FLT_MAX;
-    int i;
+    int i=1;
     __m256i k=_mm256_set_epi32(7,6,5,4,3,2,1,0); /* the offset for j'th parabola for the i'th peice of work is k[i]=8*j+i. */
+    
     ws->i[0]=_mm256_setzero_si256();
     ws->start[0]=_mm256_set1_ps(-FLT_MAX);
     ws->start[1]=_mm256_set1_ps(FLT_MAX);
-    for(i=0;i<n;++i){
-        const float _i=(float)i;
-        const __m256i v=_mm256_i32gather_epi32((const int*)ws->i,k,1);
-        __m256       i2=_mm256_broadcast_ss(&_i),
-                     v2=_mm256_cvtepi32_ps(v);
 
-        i2=_mm256_mul_ps(i2,i2);
-        v2=_mm256_mul_ps(v2,v2);
-        
-        __m256 snum,sden;
+    __m256 snumi;
+    {
+        const __m256 i2=_mm256_set1_ps((float)i*i),
+                     si=_mm256_load_ps(src+i*stride);
+        snumi=_mm256_sub_ps(si,i2);  /* the i-dependent part of the numerator */
+    }
+
+    while(i<n){
+        __m256 snum,sden,q;
         {
-            __m256 si=_mm256_load_ps(src+i*stride),
-                sv=_mm256_i32gather_ps(src,v,stride);
-            __m256i d=_mm256_sub_epi32(_mm256_set1_epi32(i),v);
-            snum=_mm256_sub_ps(_mm256_add_ps(si,i2),_mm256_add_ps(sv,v2));
-            d=_mm256_mul_epi32(_mm256_set1_epi32(2),d);
-            sden=_mm256_cvtepi32_ps(d);
+            const __m256i v=_mm256_i32gather_epi32((const int*)ws->i,k,1);
+            __m256       v2=_mm256_cvtepi32_ps(v);
+            __m256       sv=_mm256_i32gather_ps(src,v,stride);
+            sden=_mm256_sub_ps(_mm256_set1_ps((float)i),v2); /* i-v (v2 hasn't been squared yet) */
+            sden=_mm256_mul_ps(_mm256_set1_ps(2.0f),sden);
+            v2=_mm256_mul_ps(v2,v2);
+            snum=_mm256_sub_ps(snumi,_mm256_add_ps(sv,v2));
         }
-
-        __m256 q;
         {
             __m256 starts=_mm256_i32gather_ps(ws->start,k,1),
                       rhs=_mm256_mul_ps(starts,sden);
-            q=_mm256_cmp_ps(snum,rhs,_CMP_LE_OQ);  /* snum<rhs ? -1 : 0 */            
+            q=_mm256_cmp_ps(snum,rhs,_CMP_LE_OQ);  /* snum<=rhs ? 0xf_ : 0_ */            
         }
-
+        
+        int test=_mm256_movemask_ps(q)&0xff;
+        /* 1. masked increment/decrement of k. [ k(q<0)--, k(q==0)++ ] */
+        {
+            __m256i inc=_mm256_blend_epi32(_mm256_set1_epi32(1),_mm256_set1_epi32(-1),test);
+            k=_mm256_add_epi32(k,inc);
+        }
+        /* 2.if all in q==-1, increment i and commit parabola */
+        if(test==0xff) {
+            // ?? how to commit
+            i++;
+            {
+                const __m256 i2=_mm256_set1_ps((float)i*i),
+                             si=_mm256_load_ps(src+i*stride);
+                snumi=_mm256_sub_ps(si,i2);  /* the i-dependent part of the numerator */
+            }
+        }
+        
     }
 }
 
